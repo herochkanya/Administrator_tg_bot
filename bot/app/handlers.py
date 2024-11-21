@@ -4,6 +4,8 @@ from aiogram.filters import Command
 from aiogram.types import ChatPermissions, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, Message
 import random
 
+import config
+
 router = Router()
 
 # Список забанених та замучених користувачів
@@ -33,8 +35,6 @@ HISTORY_FILE = "chat_history.txt"
 
 # Лічильники для чатів
 message_counters = {}
-
-
 
 # Збереження текстового повідомлення в файл
 def save_message_to_file(text):
@@ -66,9 +66,9 @@ async def is_target_admin(bot: Bot, chat_id: int, user_id: int) -> bool:
         return False
 
 
-# Перевірка на наявність "@heros_son_bot" у команді
+# Перевірка на наявність bot's username у команді
 def check_bot_command(message: types.Message) -> bool:
-    return "@heros_son_bot" in message.text
+    return f"@{config.BOT_NAME}" in message.text
 
 
 # Обробка команд з помилками
@@ -78,24 +78,24 @@ async def handle_command_error(message: types.Message, e: Exception):
 # Опис категорій і команд
 commands_dict = {
     "Зміна акаунту": [
-        "/profile@heros_son_bot - Переглянути свій профіль",
-        "/set_photo@heros_son_bot - Змінити фото профілю",
-        "/set_bio@heros_son_bot - Додати/змінити біографію",
-        "/change_nickname@heros_son_bot - Змінити нікнейм"
+        "/profile - Переглянути свій профіль",
+        "/set_photo - Змінити фото профілю",
+        "/set_bio - Додати/змінити біографію",
+        "/change_nickname - Змінити нікнейм"
     ],
     "Адміністрування": [
-        "/ban@heros_son_bot [user] - Забанити користувача",
-        "/unban@heros_son_bot [user] - Розбанити користувача",
-        "/mute@heros_son_bot [user] [time] - Замутити користувача",
-        "/unmute@heros_son_bot [user] - Розмутити користувача",
-        "/warn@heros_son_bot - Дати попередження",
-        "/kick@heros_son_bot [user] - Кікнути користувача",
-        "/report@heros_son_bot - Показати всіх адміністраторів"
+        "/ban [user] - Забанити користувача",
+        "/unban [user] - Розбанити користувача",
+        "/mute [user] [time] - Замутити користувача",
+        "/unmute [user] - Розмутити користувача",
+        "/warn - Дати попередження",
+        "/kick [user] - Кікнути користувача",
+        "/report - Показати всіх адміністраторів"
     ],
     "Інше": [
-        "/help@heros_son_bot - Показати список команд",
-        "/start@heros_son_bot - Запустити бота",
-        "/info@heros_son_bot - Інформація про бота"
+        "/help - Показати список команд",
+        "/start - Запустити бота",
+        "/info - Інформація про бота"
     ]
 }
 
@@ -111,93 +111,100 @@ def generate_help_keyboard():
 # Команда /profile
 @router.message(Command("profile"))
 async def profile_command(message: types.Message):
-    if check_bot_command(message):
-        user = message.reply_to_message.from_user if message.reply_to_message else message.from_user
-        user_id = user.id
-        chat_id = message.chat.id
+    user = message.reply_to_message.from_user if message.reply_to_message else message.from_user
+    chat = message.chat
 
-        # Перевіряємо, чи існує запис для цього користувача в поточному чаті
-        cursor.execute("""
-        INSERT OR IGNORE INTO warns (user_id, chat_id, first_name, last_name, warns)
-        VALUES (?, ?, ?, ?, 0)
-        """, (user_id, chat_id, user.first_name, user.last_name))
-        conn.commit()
+    # Перевіряємо, чи існує запис для цього користувача в поточному чаті
+    cursor.execute("""
+    INSERT OR IGNORE INTO warns (user_id, chat_id, first_name, last_name, warns)
+    VALUES (?, ?, ?, ?, 0)
+    """, (user.id, chat.id, user.first_name, user.last_name))
+    conn.commit()
 
-        cursor.execute("""
-        SELECT first_name, last_name, warns, bio, profile_photo_id FROM warns
+    cursor.execute(
+        """
+        SELECT first_name, last_name, warns, bio, profile_photo_id 
+        FROM warns
         WHERE user_id = ? AND chat_id = ?
-        """, (user_id, chat_id))
-        result = cursor.fetchone()
+        """,
+        (user.id, chat.id))
+    result = cursor.fetchone()
 
-        if result:
-            first_name, last_name, warns, bio, profile_photo_id = result
-            user_name = f"{first_name} {last_name}" if last_name else first_name
-            bio_text = bio if bio else "Біографія не вказана."
+    if not result:
+        return await message.answer("Профіль не знайдено.")
+    
+    first_name, last_name, warns, bio, profile_photo_id = result
+    user_name = f"{first_name} {last_name}" if last_name else first_name
+    bio_text = bio if bio else "Біографія не вказана."
 
-            profile_text = (f"Користувач: <a href='tg://user?id={user_id}'>{user_name}</a>\n"
-                            f"ID: {user_id}\n"
-                            f"Чат: {chat_id}\n"
-                            f"Кількість попереджень: {warns}/3\n"
-                            f"Біографія: {bio_text}")
-
-            if profile_photo_id:
-                await message.answer_photo(photo=profile_photo_id, caption=profile_text, parse_mode="HTML")
-            else:
-                await message.answer(profile_text, parse_mode="HTML")
-        else:
-            await message.answer("Профіль не знайдено.")
+    profile_text = (
+        f"Користувач: <a href='tg://user?id={user.id}'>{user_name}</a>\n"
+        f"ID: {user.id}\n"
+        f"Чат: {chat.id}\n"
+        f"Кількість попереджень: {warns}/3\n"
+        f"Біографія: {bio_text}"
+    )
+    
+    if profile_photo_id:
+        await message.answer_photo(photo=profile_photo_id, caption=profile_text, parse_mode="HTML")
+    else:
+        await message.answer(profile_text, parse_mode="HTML")
+        
 
 
 # Команда /warn
 @router.message(Command("warn"))
 async def warn_command(message: types.Message, bot: Bot):
-    if check_bot_command(message):
-        if not message.reply_to_message:
-            await message.answer("Команду /warn потрібно використовувати у відповідь на повідомлення користувача.")
-            return
+    if not message.reply_to_message:
+        return await message.answer("Команду /warn потрібно використовувати у відповідь на повідомлення користувача.")
+        
 
-        if not await is_admin(bot, message.chat.id, message.from_user.id):
-            await message.answer("Тільки адміністратори можуть давати попередження.")
-            return
+    if not await is_admin(bot, message.chat.id, message.from_user.id):
+        return await message.answer("Тільки адміністратори можуть давати попередження.")
+        
 
-        target_user = message.reply_to_message.from_user
-        target_user_id = target_user.id
+    target_user = message.reply_to_message.from_user
 
-        if await is_target_admin(bot, message.chat.id, target_user_id):
-            await message.answer("Неможливо дати попередження адміністратору або власнику.")
-            return
+    if await is_target_admin(bot, message.chat.id, target_user.id):
+        return await message.answer("Неможливо дати попередження адміністратору або власнику.")
+        
 
-        chat_id = message.chat.id
-        first_name = target_user.first_name
-        last_name = target_user.last_name
+    chat_id = message.chat.id
+    first_name = target_user.first_name
+    last_name = target_user.last_name
 
-        # Додаємо або оновлюємо запис у базі даних
-        cursor.execute("""
+    # Додаємо або оновлюємо запис у базі даних
+    cursor.execute(
+        """
         INSERT OR IGNORE INTO warns (user_id, chat_id, first_name, last_name, warns)
         VALUES (?, ?, ?, ?, 0)
-        """, (target_user_id, chat_id, first_name, last_name))
-        cursor.execute("""
-        UPDATE warns SET warns = warns + 1 WHERE user_id = ? AND chat_id = ?
-        """, (target_user_id, chat_id))
-        conn.commit()
+        """,
+        (target_user.id, chat_id, first_name, last_name)
+    )
+    cursor.execute(
+        """UPDATE warns SET warns = warns + 1 WHERE user_id = ? AND chat_id = ?""",
+        (target_user.id, chat_id)
+    )
+    conn.commit()
 
-        # Отримуємо оновлену кількість попереджень
-        cursor.execute("""
-        SELECT warns FROM warns WHERE user_id = ? AND chat_id = ?
-        """, (target_user_id, chat_id))
-        warns = cursor.fetchone()[0]
+    # Отримуємо оновлену кількість попереджень
+    cursor.execute(
+        """SELECT warns FROM warns WHERE user_id = ? AND chat_id = ?""",
+        (target_user.id, chat_id)
+    )
+    warns = cursor.fetchone()[0]
 
-        if warns >= 3:
-            await bot.ban_chat_member(chat_id, target_user_id)
-            cursor.execute("""
-            DELETE FROM warns WHERE user_id = ? AND chat_id = ?
-            """, (target_user_id, chat_id))
-            conn.commit()
-            await message.answer(f"Користувач {first_name} забанений за 3 попередження.")
-        else:
-            await message.answer(f"Користувач {first_name} отримав {warns}/3 попереджень.")
-
-
+    if warns < 3:
+        return await message.answer(f"Користувач {first_name} отримав {warns}/3 попереджень.")
+    
+    await bot.ban_chat_member(chat_id, target_user.id)
+    cursor.execute(
+        """DELETE FROM warns WHERE user_id = ? AND chat_id = ?""",
+        (target_user.id, chat_id)
+    )
+    conn.commit()
+    await message.answer(f"Користувач {first_name} забанений за 3 попередження.")
+    
 # Інші функції з попереднього коду (наприклад, /help, /ban, /unban) залишаються без змін
 # Обробник змін членства
 @router.message(F.content_type.in_({"new_chat_members"}))
@@ -224,172 +231,142 @@ async def help_command(message: types.Message):
     keyboard = generate_help_keyboard()
     await message.answer("Оберіть розділ, щоб переглянути доступні команди:", reply_markup=keyboard)
 
-
 # Обробка натискань на кнопки
 @router.callback_query(lambda call: call.data.startswith("help_"))
 async def help_callback_handler(callback_query: CallbackQuery):
     category = callback_query.data.split("_", 1)[1]  # Отримуємо назву розділу
     commands = commands_dict.get(category, [])
 
-    if commands:
-        commands_text = "\n".join(commands)
-        await callback_query.message.edit_text(
-            f"Команди в розділі <b>{category}</b>:\n\n{commands_text}",
-            parse_mode="HTML",
-            reply_markup=generate_help_keyboard()
-        )
-    else:
-        await callback_query.answer("Розділ не знайдено.")
-
+    if not commands:
+        return await callback_query.answer("Розділ не знайдено.")
+    
+    commands_text = "\n".join(commands)
+    await callback_query.message.edit_text(
+        f"Команди в розділі <b>{category}</b>:\n\n{commands_text}",
+        parse_mode="HTML",
+        reply_markup=generate_help_keyboard(),
+    )
+    
 
 # Команда /ban
 @router.message(Command("ban"))
 async def ban_command(message: types.Message, bot: Bot):
-    if check_bot_command(message):
-        if not message.reply_to_message:
-            await message.answer("Команду /ban потрібно використовувати у відповідь на повідомлення користувача.")
-            return
-
-        if not await is_admin(bot, message.chat.id, message.from_user.id):
-            await message.answer("Тільки адміністратори можуть банити користувачів.")
-            return
-
-        target_user = message.reply_to_message.from_user
-        target_user_id = target_user.id
-
-        if await is_target_admin(bot, message.chat.id, target_user_id):
-            await message.answer("Неможливо забанити адміністратора або власника.")
-            return
-
-        await bot.ban_chat_member(message.chat.id, target_user_id)
-        banned_users.add(target_user_id)
-        await message.answer(f"Користувач {target_user.first_name} забанений.")
-
+    if not message.reply_to_message:
+        return await message.answer("Команду /ban потрібно використовувати у відповідь на повідомлення користувача.")
+        
+    if not await is_admin(bot, message.chat.id, message.from_user.id):
+        return await message.answer("Тільки адміністратори можуть банити користувачів.")
+        
+    target_user = message.reply_to_message.from_user
+    if await is_target_admin(bot, message.chat.id, target_user.id):
+        return await message.answer("Неможливо забанити адміністратора або власника.")
+        
+    await bot.ban_chat_member(message.chat.id, target_user.id)
+    banned_users.add(target_user.id)
+    await message.answer(f"Користувач {target_user.first_name} забанений.")
 
 # Команда /unban
 @router.message(Command("unban"))
 async def unban_command(message: types.Message, bot: Bot):
-    if check_bot_command(message):
-        if not message.reply_to_message:
-            await message.answer("Команду /unban потрібно використовувати у відповідь на повідомлення користувача.")
-            return
-
-        if not await is_admin(bot, message.chat.id, message.from_user.id):
-            await message.answer("Тільки адміністратори можуть розпалювати користувачів.")
-            return
-
-        target_user = message.reply_to_message.from_user
-        target_user_id = target_user.id
-
-        # Перевіряємо, чи є користувач у списку забанених
-        if target_user_id not in banned_users:
-            await message.answer(f"Користувач {target_user.first_name} не перебуває в бані.")
-            return
-
-        await bot.unban_chat_member(message.chat.id, target_user_id)
-        banned_users.remove(target_user_id)
-        await message.answer(f"Користувач {target_user.first_name} успішно розбанений.")
-
+    if not message.reply_to_message:
+        return await message.answer("Команду /unban потрібно використовувати у відповідь на повідомлення користувача.")
+            
+    if not await is_admin(bot, message.chat.id, message.from_user.id):
+        return await message.answer("Тільки адміністратори можуть розпалювати користувачів.")
+            
+    target_user = message.reply_to_message.from_user
+    # Перевіряємо, чи є користувач у списку забанених
+    if target_user.id not in banned_users:
+        return await message.answer(f"Користувач {target_user.first_name} не перебуває в бані.")
+        
+    await bot.unban_chat_member(message.chat.id, target_user.id)
+    banned_users.remove(target_user.id)
+    await message.answer(f"Користувач {target_user.first_name} успішно розбанений.")
 
 # Команда /mute
 @router.message(Command("mute"))
 async def mute_command(message: types.Message, bot: Bot):
-    if check_bot_command(message):
-        if not message.reply_to_message:
-            await message.answer("Команду /mute потрібно використовувати у відповідь на повідомлення користувача.")
-            return
+    if not message.reply_to_message:
+        return await message.answer("Команду /mute потрібно використовувати у відповідь на повідомлення користувача.")
+            
+    if not await is_admin(bot, message.chat.id, message.from_user.id):
+        return await message.answer("Тільки адміністратори можуть мутити користувачів.")
+            
+    target_user = message.reply_to_message.from_user
+    if await is_target_admin(bot, message.chat.id, target_user.id):
+        return await message.answer("Неможливо замутити адміністратора або власника.")
+        
+    mute_time = 60 * 60  # Замутити на 1 годину
+    until_date = message.date + mute_time
 
-        if not await is_admin(bot, message.chat.id, message.from_user.id):
-            await message.answer("Тільки адміністратори можуть мутити користувачів.")
-            return
-
-        target_user = message.reply_to_message.from_user
-        target_user_id = target_user.id
-
-        if await is_target_admin(bot, message.chat.id, target_user_id):
-            await message.answer("Неможливо замутити адміністратора або власника.")
-            return
-
-        mute_time = 60 * 60  # Замутити на 1 годину
-        until_date = message.date + mute_time
-
-        await bot.restrict_chat_member(
-            chat_id=message.chat.id,
-            user_id=target_user_id,
-            permissions=ChatPermissions(can_send_messages=False),
-            until_date=until_date
-        )
-        muted_users[target_user_id] = until_date
-        await message.answer(f"Користувач {target_user.first_name} замучений на {mute_time // 60} хвилин.")
-
+    await bot.restrict_chat_member(
+        chat_id=message.chat.id,
+        user_id=target_user.id,
+        permissions=ChatPermissions(can_send_messages=False),
+        until_date=until_date
+    )
+    muted_users[target_user.id] = until_date
+    await message.answer(f"Користувач {target_user.first_name} замучений на {mute_time // 60} хвилин.")
 
 # Команда /unmute
 @router.message(Command("unmute"))
 async def unmute_command(message: types.Message, bot: Bot):
-    if check_bot_command(message):
-        if not message.reply_to_message:
-            await message.answer("Команду /unmute потрібно використовувати у відповідь на повідомлення користувача.")
-            return
-
-        if not await is_admin(bot, message.chat.id, message.from_user.id):
-            await message.answer("Тільки адміністратори можуть розмутити користувачів.")
-            return
-
-        target_user = message.reply_to_message.from_user
-        target_user_id = target_user.id
-
-        # Перевіряємо, чи є користувач у списку замучених
-        if target_user_id not in muted_users:
-            await message.answer(f"Користувач {target_user.first_name} не перебуває в муті.")
-            return
-
-        await bot.restrict_chat_member(
-            chat_id=message.chat.id,
-            user_id=target_user_id,
-            permissions=ChatPermissions(can_send_messages=True)
-        )
-        del muted_users[target_user_id]
-        await message.answer(f"Користувач {target_user.first_name} успішно розмучений.")
-
+    if not message.reply_to_message:
+        return await message.answer("Команду /unmute потрібно використовувати у відповідь на повідомлення користувача.")
+            
+    if not await is_admin(bot, message.chat.id, message.from_user.id):
+        return await message.answer("Тільки адміністратори можуть розмутити користувачів.")
+        
+    target_user = message.reply_to_message.from_user
+    # Перевіряємо, чи є користувач у списку замучених
+    if target_user.id not in muted_users:
+        return await message.answer(f"Користувач {target_user.first_name} не перебуває в муті.")
+        
+    await bot.restrict_chat_member(
+        chat_id=message.chat.id,
+        user_id=target_user.id,
+        permissions=ChatPermissions(can_send_messages=True)
+    )
+    del muted_users[target_user.id]
+    await message.answer(f"Користувач {target_user.first_name} успішно розмучений.")
 
 # Команда /report
 @router.message(Command(commands=["report"]))
 async def report_command(message: types.Message, bot: Bot):
-    if check_bot_command(message):
-        try:
-            admins = await bot.get_chat_administrators(message.chat.id)
-            admin_list = ""
+    try:
+        admins = await bot.get_chat_administrators(message.chat.id)
+        admin_list = ""
 
-            for admin in admins:
-                user_id = admin.user.id
+        for admin in admins:
+            user_id = admin.user.id
 
-                # Перевіряємо, чи є користувач у базі
-                cursor.execute("SELECT first_name, last_name FROM warns WHERE user_id = ?", (user_id,))
-                result = cursor.fetchone()
+            # Перевіряємо, чи є користувач у базі
+            cursor.execute("SELECT first_name, last_name FROM warns WHERE user_id = ?", (user_id,))
+            result = cursor.fetchone()
 
-                if result:
-                    first_name, last_name = result
-                else:
-                    # Використовуємо стандартне ім'я Telegram, якщо користувача немає в базі
-                    first_name = admin.user.first_name
-                    last_name = admin.user.last_name
-
-                # Формуємо ім'я для відображення
-                user_name = f"{first_name} {last_name}" if last_name else first_name
-                admin_list += f"<a href='tg://user?id={user_id}'>{user_name}</a>\n"
-
-            if admin_list:
-                await message.answer(f"Адміністратори чату:\n{admin_list}", parse_mode="HTML")
+            if result:
+                first_name, last_name = result
             else:
-                await message.answer("У цьому чаті немає адміністраторів.")
-        except Exception as e:
-            await handle_command_error(message, e)
+                # Використовуємо стандартне ім'я Telegram, якщо користувача немає в базі
+                first_name = admin.user.first_name
+                last_name = admin.user.last_name
+
+            # Формуємо ім'я для відображення
+            user_name = f"{first_name} {last_name}" if last_name else first_name
+            admin_list += f"<a href='tg://user?id={user_id}'>{user_name}</a>\n"
+
+        if not admin_list:
+            return await message.answer("У цьому чаті немає адміністраторів.")
+        
+        await message.answer(f"Адміністратори чату:\n{admin_list}", parse_mode="HTML")
+    except Exception as e:
+        await handle_command_error(message, e)
 
 
 # Команда /kick
 @router.message(Command("kick"))
 async def kick_command(message: types.Message, bot: Bot):
-    if check_bot_command(message):
+    
         try:
             user_id = message.reply_to_message.from_user.id if message.reply_to_message else message.get_args().split()[
                 0].strip('@')
@@ -410,52 +387,53 @@ async def kick_command(message: types.Message, bot: Bot):
 # 1. Команда для зміни нікнейму
 @router.message(Command(commands=["change_nickname"]))
 async def change_nickname_command(message: types.Message, command: Command):
-    if check_bot_command(message):
-        args = command.args  # Отримуємо аргументи команди
-        if args:
-            new_nickname = args.strip()
-            user_id = message.from_user.id
+    args = command.args  # Отримуємо аргументи команди
+    if not args:
+        return await message.answer("Будь ласка, вкажіть новий нікнейм після команди.")
+    
+    new_nickname = args.strip()
+    user_id = message.from_user.id
 
-            cursor.execute("UPDATE warns SET first_name = ? WHERE user_id = ?", (new_nickname, user_id))
-            conn.commit()
+    cursor.execute("UPDATE warns SET first_name = ? WHERE user_id = ?", (new_nickname, user_id))
+    conn.commit()
 
-            await message.answer(f"Ваш нікнейм успішно змінено на {new_nickname}.")
-        else:
-            await message.answer("Будь ласка, вкажіть новий нікнейм після команди.")
+    await message.answer(f"Ваш нікнейм успішно змінено на {new_nickname}.")
+    
 
 
 # 2. Команда для додавання/зміни фото профілю
 @router.message(Command("set_photo"))
 async def set_profile_photo_command(message: types.Message):
-    if check_bot_command(message):
-        if message.reply_to_message and message.reply_to_message.photo:
-            user_id = message.from_user.id
-            photo = message.reply_to_message.photo[-1].file_id  # Беремо найвищу якість
+    text = "Будь ласка, відповідайте на повідомлення з фото, щоб встановити його як фото профілю."
+    
+    if not message.reply_to_message:
+        return await message.answer(text)
+    
+    if not message.reply_to_message.photo:
+        return await message.answer(text)
 
-            cursor.execute("UPDATE warns SET profile_photo_id = ? WHERE user_id = ?", (photo, user_id))
-            conn.commit()
+    user_id = message.from_user.id
+    photo = message.reply_to_message.photo[-1].file_id  # Беремо найвищу якість
 
-            await message.answer("Ваше фото профілю успішно оновлено.")
-        else:
-            await message.answer("Будь ласка, відповідайте на повідомлення з фото, щоб встановити його як фото профілю.")
+    cursor.execute("UPDATE warns SET profile_photo_id = ? WHERE user_id = ?", (photo, user_id))
+    conn.commit()
 
+    await message.answer("Ваше фото профілю успішно оновлено.")
 
 # 3. Команда для додавання/зміни біографії
 @router.message(Command(commands=["set_bio"]))
 async def set_bio_command(message: types.Message, command: Command):
-    if check_bot_command(message):
-        bio = command.args  # Отримуємо аргументи команди
-        if bio:
-            user_id = message.from_user.id
+    bio = command.args  # Отримуємо аргументи команди
+    if not bio:
+        return await message.answer("Будь ласка, вкажіть текст біографії після команди.")
 
-            cursor.execute("UPDATE warns SET bio = ? WHERE user_id = ?", (bio, user_id))
-            conn.commit()
+    user_id = message.from_user.id
 
-            await message.answer("Ваша біографія успішно оновлена.")
-        else:
-            await message.answer("Будь ласка, вкажіть текст біографії після команди.")
+    cursor.execute("UPDATE warns SET bio = ? WHERE user_id = ?", (bio, user_id))
+    conn.commit()
 
-
+    await message.answer("Ваша біографія успішно оновлена.")
+        
 @router.message(F.text & ~F.text.startswith("/"))
 async def handle_text_message(message: Message):
     chat_id = message.chat.id
