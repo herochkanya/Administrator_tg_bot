@@ -30,36 +30,80 @@ with sqlite3.connect("warns.db") as conn:
     """)
 
 
-# Файл для збереження історії повідомлень
-HISTORY_FILE = "chat_history.txt"
+# Опис категорій і команд
+commands_dict = {
+    "Зміна акаунту": [
+        "/profile - Переглянути свій профіль",
+        "/set_photo - Змінити фото профілю",
+        "/set_bio - Додати/змінити біографію",
+        "/change_nickname - Змінити нікнейм"
+    ],
+    "Адміністрування": [
+        "/ban [user] - Забанити користувача",
+        "/unban [user] - Розбанити користувача",
+        "/mute [user] [time] - Замутити користувача",
+        "/unmute [user] - Розмутити користувача",
+        "/warn - Дати попередження",
+        "/kick [user] - Кікнути користувача",
+        "/report - Показати всіх адміністраторів"
+    ],
+    "Інше": [
+        "/help - Показати список команд",
+        "/start - Запустити бота",
+        "/info - Інформація про бота"
+    ]
+}
 
-# Лічильники для чатів
-message_counters = {}
 
 
+# Створення або відкриття бази даних
+def create_connection():
+    return sqlite3.connect('history.db')
 
-# Збереження текстового повідомлення до файлу, уникаючи повторення фраз
+# Функція для створення таблиці повідомлень
+def create_messages_table():
+    with create_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                text TEXT UNIQUE
+            )
+        ''')
+
+# Збереження текстового повідомлення до бази даних, уникаючи повторення фраз
 def save_message_to_file(text):
+    # Видалення символів нового рядка (\n) та об'єднання всіх рядків тексту в один рядок
+    single_line_text = " ".join(text.split())
     try:
-        # Завантажуємо весь вміст файлу
-        with open(HISTORY_FILE, "r", encoding="utf-8") as file:
-            existing_phrases = file.read().splitlines()
-    except FileNotFoundError:
-        existing_phrases = []
+        with create_connection() as conn:
+            cursor = conn.cursor()
+            # Перевірка наявності дубліката
+            cursor.execute('SELECT COUNT(*) FROM messages WHERE text = ?', (single_line_text,))
+            count = cursor.fetchone()[0]
+            if count == 0:
+                # Вставка нового повідомлення, якщо дубліката немає
+                cursor.execute('''
+                    INSERT OR IGNORE INTO messages (text)
+                    VALUES (?)
+                ''', (single_line_text,))
+    except sqlite3.Error as e:
+        print(f"Error saving message: {e}")
 
-    # Якщо фраза ще не збережена, додаємо її до файлу
-    if text not in existing_phrases:
-        with open(HISTORY_FILE, "a", encoding="utf-8") as file:
-            file.write(text + "\n")
-
-# Зчитування випадкового повідомлення з файлу
-def get_random_quote():
+# Зчитування випадкового повідомлення з бази даних
+def get_random_message():
     try:
-        with open(HISTORY_FILE, "r", encoding="utf-8") as file:
-            messages = file.readlines()
-        return random.choice(messages).strip() if messages else None
-    except FileNotFoundError:
+        with create_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT text FROM messages ORDER BY RANDOM() LIMIT 1')
+            result = cursor.fetchone()
+            return result[0] if result else None
+    except sqlite3.Error as e:
+        print(f"Error retrieving message: {e}")
         return None
+
+# Створення таблиці при першому запуску
+create_messages_table()
 
 
 # Функція перевірки, чи є користувач адміністратором
@@ -85,30 +129,6 @@ def check_bot_command(message: types.Message) -> bool:
 # Обробка команд з помилками
 async def handle_command_error(message: types.Message, e: Exception):
     await message.answer(f"Помилка: {str(e)}")
-
-# Опис категорій і команд
-commands_dict = {
-    "Зміна акаунту": [
-        "/profile - Переглянути свій профіль",
-        "/set_photo - Змінити фото профілю",
-        "/set_bio - Додати/змінити біографію",
-        "/change_nickname - Змінити нікнейм"
-    ],
-    "Адміністрування": [
-        "/ban [user] - Забанити користувача",
-        "/unban [user] - Розбанити користувача",
-        "/mute [user] [time] - Замутити користувача",
-        "/unmute [user] - Розмутити користувача",
-        "/warn - Дати попередження",
-        "/kick [user] - Кікнути користувача",
-        "/report - Показати всіх адміністраторів"
-    ],
-    "Інше": [
-        "/help - Показати список команд",
-        "/start - Запустити бота",
-        "/info - Інформація про бота"
-    ]
-}
 
 # Генерація клавіатури для розділів
 def generate_help_keyboard():
@@ -361,23 +381,30 @@ async def report_command(message: types.Message, bot: Bot):
         admins = await bot.get_chat_administrators(message.chat.id)
         admin_list = ""
 
-        for admin in admins:
-            user_id = admin.user.id
+        # Визначаємо правильну таблицю для кожного чату
+        chat_id = message.chat.id
+        warnings_table = create_warnings_table(chat_id)
 
-            # Перевіряємо, чи є користувач у базі
-            cursor.execute("SELECT first_name, last_name FROM warns WHERE user_id = ?", (user_id,))
-            result = cursor.fetchone()
+        with sqlite3.connect("warns.db") as conn:
+            cursor = conn.cursor()
 
-            if result:
-                first_name, last_name = result
-            else:
-                # Використовуємо стандартне ім'я Telegram, якщо користувача немає в базі
-                first_name = admin.user.first_name
-                last_name = admin.user.last_name
+            for admin in admins:
+                user_id = admin.user.id
 
-            # Формуємо ім'я для відображення
-            user_name = f"{first_name} {last_name}" if last_name else first_name
-            admin_list += f"<a href='tg://user?id={user_id}'>{user_name}</a>\n"
+                # Перевіряємо, чи є користувач у таблиці профілів
+                cursor.execute("SELECT first_name, last_name FROM profiles WHERE user_id = ?", (user_id,))
+                result = cursor.fetchone()
+
+                if result:
+                    first_name, last_name = result
+                else:
+                    # Використовуємо стандартне ім'я Telegram, якщо користувача немає в базі
+                    first_name = admin.user.first_name
+                    last_name = admin.user.last_name
+
+                # Формуємо ім'я для відображення
+                user_name = f"{first_name} {last_name}" if last_name else first_name
+                admin_list += f"<a href='tg://user?id={user_id}'>{user_name}</a>\n"
 
         if not admin_list:
             return await message.answer("У цьому чаті немає адміністраторів.")
