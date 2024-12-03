@@ -4,12 +4,23 @@ from aiogram.filters import Command
 from aiogram.types import ChatPermissions, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, Message
 import random
 import config
+from game import TicTacToe
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 
 router = Router()
 
 # Список забанених та замучених користувачів
 banned_users = set()
 muted_users = {}
+
+games = {}  # Словник для зберігання ігор
+choices = {}  # Словник для зберігання вибору гравців
+
+# Клас для станів гри
+class TicTacToeGame(StatesGroup):
+    waiting_for_choice = State()  # Очікування вибору
+    playing = State()  # Гра в процесі
 
 son = [
     "сину", "сина", "синочок", "хіро",
@@ -153,6 +164,75 @@ def create_warnings_table(chat_id):
         )
         """)
     return table_name
+
+
+@router.message(Command("xo"))
+async def start_game(message: types.Message, state: FSMContext):
+    """Запуск гри: створення вибору символів."""
+    chat_id = message.chat.id
+
+    if chat_id not in games:
+        # Ініціалізуємо гру для чату
+        games[chat_id] = {"players": {}, "ready": False}
+
+        # Створення клавіатури для вибору символу
+        markup = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="❌ Хрестики", callback_data="choose_X"),
+                    InlineKeyboardButton(text="⭕ Нулики", callback_data="choose_O")
+                ]
+            ]
+        )
+
+        await message.answer("Хто хоче грати? Оберіть свої символи:", reply_markup=markup)
+        await state.set_state("waiting_for_choice")
+    else:
+        await message.answer("Гра вже запущена! Дочекайтесь завершення або перезапустіть.")
+
+@router.callback_query(F.Text.startswith("choose_"))
+async def handle_choice(callback_query: types.CallbackQuery, state: FSMContext):
+    """Обробка вибору символу."""
+    user_id = callback_query.from_user.id
+    choice = callback_query.data.split("_")[1]
+
+    if user_id in games:
+        await callback_query.answer("Ти вже зробив вибір!", show_alert=True)
+        print(f"DEBUG: User {user_id} already made a choice: {games[user_id]}.")
+        return
+
+    # Зберігаємо вибір гравця
+    if choice == "X":
+        games[user_id] = {"symbol": "X"}
+    elif choice == "O":
+        games[user_id] = {"symbol": "O"}
+
+    print(f"DEBUG: Current game state: {games}")
+
+    # Перевіряємо, чи обидва гравці зробили вибір
+    if len(games) == 2:
+        symbols = [data["symbol"] for data in games.values()]
+        if "X" in symbols and "O" in symbols:
+            await callback_query.message.answer("Обидва гравці обрали символи! Гра починається!")
+            print("DEBUG: Game starts.")
+            await state.set_state("playing")
+        else:
+            await callback_query.message.answer("Щось пішло не так. Один із символів не вибрано.")
+            print("DEBUG: Invalid game state - symbols: ", symbols)
+    else:
+        await callback_query.message.answer(
+            f"Ти вибрав {games[user_id]['symbol']}. Очікуємо другого гравця."
+        )
+
+    # Відповідь на callback (щоб прибрати "завантаження")
+    await callback_query.answer()
+
+
+@router.callback_query()
+async def debug_callback(callback_query: types.CallbackQuery):
+    """Дебаг усіх callback_query."""
+    print(f"DEBUG: Received callback_query.data={callback_query.data}")
+    await callback_query.answer("Дебаг: колбек отримано!", show_alert=True)
 
 
 # Команда /profile
@@ -503,12 +583,12 @@ async def handle_text_message(message: Message):
     save_message_to_file(text)
 
     if is_reply_to_bot or contains_son:
-        random_quote = get_random_quote()
+        random_quote = get_random_message()
         await message.reply(random_quote)
 
     # Генеруємо випадкове число від 1 до 10
     elif random.randint(1, 10) == 5:
-        random_quote = get_random_quote()
+        random_quote = get_random_message()
         if random_quote:
             await message.reply(random_quote)
         else:
