@@ -11,6 +11,10 @@ This bot is your indispensable assistant:
 
 This is your virtual friend and administrator all in one! 🌟
 
+<a href="https://herochkanya.github.io/BotInfoSite/" target="_blank">Site info card bot</a>
+
+<a href="https://t.me/heros_son_bot" target="_blank">Telegram bot for testing</a>
+
 ## How to use
 
 1. Connect the bot to your Telegram channel or chat.
@@ -19,4 +23,6 @@ This is your virtual friend and administrator all in one! 🌟
 
 ## Photos
 
-![1](https://github.com/user-attachments/assets/43cc5a67-9d64-41bc-8585-f3edfdfa943c)![2](https://github.com/user-attachments/assets/c9ee0207-0b59-4ad3-9d7e-226b64ff0db2)![3](https://github.com/user-attachments/assets/cb8b8239-d8cb-4c8c-a7d5-cf1e7b1eb25a)![4](https://github.com/user-attachments/assets/5dde2060-b255-4cec-92aa-0627934346cd)![5](https://github.com/user-attachments/assets/cca0c011-8b79-45f8-bb25-92c03d319fd4)
+![Screenshot From 2024-12-29 18-57-13](https://github.com/user-attachments/assets/d35ec7b9-b951-416d-abc4-2145f14fb1f9)![Screenshot From 2024-12-29 18-57-38](https://github.com/user-attachments/assets/28999ffc-54b3-459e-bca4-192fbffbf1bb)
+![Screenshot From 2024-12-29 18-58-23](https://github.com/user-attachments/assets/041770f5-bd46-4938-87df-e9b00966f9b4)
+![Screenshot From 2024-12-29 18-58-49](https://github.com/user-attachments/assets/445792f3-0a1d-49ba-8160-20ea22947a66)
