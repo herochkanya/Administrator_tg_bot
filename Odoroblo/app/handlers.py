@@ -9,6 +9,7 @@ from Games import XO
 import datetime
 from datetime import datetime, timedelta, date
 import asyncio
+import json
 
 
 bot = Bot(token=TOKEN)
@@ -35,6 +36,34 @@ with sqlite3.connect("DataBases/warns.db") as conn:
         profile_photo_id TEXT DEFAULT ''
     )
     """)
+
+# Ініціалізація бази даних
+with sqlite3.connect("DataBases/warns.db") as conn:
+    cursor = conn.cursor()
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS timers (
+        chat_id INTEGER PRIMARY KEY,
+        message_id INTEGER NOT NULL,
+        end_time TEXT NOT NULL
+    )
+    """)
+
+# 1. Створення таблиці для зберігання кількості днів
+with sqlite3.connect("DataBases/warns.db") as conn:
+    cursor = conn.cursor()
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS quest_days (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        days_since_saturday INTEGER DEFAULT 1
+    )
+    """)
+
+    # Ініціалізуємо таблицю, якщо вона порожня
+    cursor.execute("SELECT COUNT(*) FROM quest_days")
+    if cursor.fetchone()[0] == 0:
+        cursor.execute("INSERT INTO quest_days (days_since_saturday) VALUES (1)")
+    conn.commit()
+
 
 commands_dict = {
     "Зміна акаунту": [
@@ -157,22 +186,7 @@ def generate_help_keyboard():
     ]
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-# Функція для створення таблиці попереджень для конкретного чату
-def create_warnings_table(chat_id):
-    sanitized_chat_id = str(chat_id).replace("-", "_")
-    table_name = f"chat_{sanitized_chat_id}_warns"
 
-    with sqlite3.connect("DataBases/warns.db") as conn:
-        cursor = conn.cursor()
-        cursor.execute(f"""
-        CREATE TABLE IF NOT EXISTS {table_name} (
-            user_id INTEGER PRIMARY KEY,
-            warns INTEGER DEFAULT 0
-        )
-        """)
-    return table_name
-
-# Функція для оновлення кількості повідомлень у базі даних
 def update_message_count(chat_id, user_id):
     sanitized_chat_id = str(chat_id).replace("-", "_")
     table_name = f"chat_{sanitized_chat_id}_messages"
@@ -184,21 +198,46 @@ def update_message_count(chat_id, user_id):
         cursor.execute(f"""
         CREATE TABLE IF NOT EXISTS {table_name} (
             user_id INTEGER PRIMARY KEY,
-            messages_count INTEGER DEFAULT 0
+            messages_count TEXT DEFAULT '[]',
+            warns INTEGER DEFAULT 0
         )
         """)
 
-        # Перевіряємо, чи є користувач у таблиці
-        cursor.execute(f"SELECT messages_count FROM {table_name} WHERE user_id = ?", (user_id,))
+        # Отримуємо поточну дату
+        current_date = datetime.now().strftime("%d.%m.%Y")
+
+        # Отримуємо дані користувача
+        cursor.execute(f"SELECT messages_count, warns FROM {table_name} WHERE user_id = ?", (user_id,))
         result = cursor.fetchone()
 
         if result is None:
-            # Якщо користувача немає, додаємо його в таблицю
-            cursor.execute(f"INSERT INTO {table_name} (user_id, messages_count) VALUES (?, ?)", (user_id, 1))
+            # Якщо користувача немає, додаємо його
+            message_list = [{"date": current_date, "messages": 1}]
+            warns_count = 0
+            cursor.execute(f"INSERT INTO {table_name} (user_id, messages_count, warns) VALUES (?, ?, ?)",
+                           (user_id, json.dumps(message_list), warns_count))
         else:
-            # Якщо користувач є, збільшуємо лічильник
-            messages_count = result[0] + 1
-            cursor.execute(f"UPDATE {table_name} SET messages_count = ? WHERE user_id = ?", (messages_count, user_id))
+            # Якщо користувач є, оновлюємо дані
+            message_list = json.loads(result[0]) if result[0] else []
+            warns_count = result[1]
+
+            # Перевірка формату списку
+            if not isinstance(message_list, list):
+                message_list = []
+
+            # Перевіряємо останній запис
+            if message_list and message_list[-1].get("date") == current_date:
+                # Якщо запис за сьогодні вже є, оновлюємо його
+                message_list[-1]["messages"] += 1
+            else:
+                # Додаємо новий запис за сьогодні
+                message_list.append({"date": current_date, "messages": 1})
+
+            # Оновлюємо дані в таблиці
+            cursor.execute(f"UPDATE {table_name} SET messages_count = ?, warns = ? WHERE user_id = ?",
+                           (json.dumps(message_list), warns_count, user_id))
+
+        conn.commit()
 
 
 def field_markup(field):
@@ -245,11 +284,16 @@ async def update_timer(chat_id: int, message_id: int, end_time: datetime):
                     message_id=message_id,
                     text="🎉 З Новим роком! 🎉"
                 )
+                # Запуск нового таймера до наступного року
+                next_year = now.year + 1
+                new_year_time = datetime(next_year, 1, 1, 0, 0, 0)
+                await asyncio.sleep(1)  # Затримка перед перезапуском
+                asyncio.create_task(update_timer(chat_id, message_id, new_year_time))
                 break
-            
+
             # Форматуємо залишок часу
             time_left = str(remaining).split(".")[0]  # Без мікросекунд
-            
+
             # Оновлюємо повідомлення
             try:
                 await bot.edit_message_text(
@@ -259,14 +303,41 @@ async def update_timer(chat_id: int, message_id: int, end_time: datetime):
                 )
             except Exception as e:
                 print(f"Помилка оновлення повідомлення: {e}")
-            
+
             # Робимо паузу для зменшення навантаження
-            await asyncio.sleep(5)  # Оновлюємо кожні 5 секунд
+            await asyncio.sleep(5)
     except asyncio.CancelledError:
-        # Якщо таймер скасовано, просто виходимо
         print(f"Таймер для чату {chat_id} скасовано.")
     except Exception as e:
         print(f"Помилка в таймері для чату {chat_id}: {e}")
+
+async def start_all_timers():
+    """Запускає таймери для всіх чатів із бази даних під час запуску бота."""
+    with sqlite3.connect("DataBases/warns.db") as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT chat_id, message_id, end_time FROM timers")
+        rows = cursor.fetchall()
+
+        for chat_id, message_id, end_time in rows:
+            end_time = datetime.fromisoformat(end_time)
+            now = datetime.now()
+
+            # Якщо час минув, запускаємо новий таймер до наступного Нового року
+            if end_time <= now:
+                next_year = now.year + 1
+                end_time = datetime(next_year, 1, 1, 0, 0, 0)
+
+                # Оновлюємо базу даних
+                cursor.execute(
+                    "UPDATE timers SET end_time = ? WHERE chat_id = ?",
+                    (end_time.isoformat(), chat_id)
+                )
+                conn.commit()
+
+            # Запускаємо таймер
+            task = asyncio.create_task(update_timer(chat_id, message_id, end_time))
+            active_timers[chat_id] = {"task": task, "message_id": message_id}
+            print(f"Автоматично запущено таймер для чату {chat_id}.")
 
 
 def create_marriages_table():
@@ -281,8 +352,8 @@ def create_marriages_table():
             start_date TEXT
         )
         """)
-create_marriages_table()
 
+create_marriages_table()
 
 def create_local_relationships_table(chat_id):
     sanitized_chat_id = str(chat_id).replace("-", "_")  # Замінити дефіси на підкреслення
@@ -413,39 +484,179 @@ async def get_top_marriages(chat_id, user_id):  # Додано user_id як ар
 
     return marriages_text
 
+async def get_local_relationships(user_id, chat_id):
+    sanitized_chat_id = str(chat_id).replace("-", "_")
+    relationships_text = ""
+
+    with sqlite3.connect("DataBases/warns.db") as conn:
+        cursor = conn.cursor()
+        cursor.execute(f"""
+        SELECT user1_id, user2_id, level, start_date FROM local_relationships_{sanitized_chat_id} 
+        WHERE (user1_id = ? OR user2_id = ?)
+        """, (user_id, user_id))
+        local_marriages = cursor.fetchall()
+
+    if local_marriages:
+        relationships_text += "<strong>Локальні:</strong>\n"
+        for marriage in local_marriages:
+            partner_id = marriage[1] if marriage[0] == user_id else marriage[0]
+            level = marriage[2]
+            start_date = datetime.strptime(marriage[3], "%Y-%m-%d")
+            duration = (datetime.now() - start_date).days
+
+            relation_type = "Шлюб" if level == 2 else "Відносини"
+
+            cursor.execute("SELECT first_name FROM profiles WHERE user_id = ?", (partner_id,))
+            partner_name = cursor.fetchone()
+            partner_name = partner_name[0] if partner_name else "Невідомо"
+
+            relationships_text += (
+                f"{relation_type} з <a href='tg://openmessage?user_id={partner_id}'>{partner_name}</a>  "
+                f"⌛️: {duration} днів.\n"
+            )
+
+    return relationships_text
+
+async def get_global_relationships(user_id):
+    relationships_text = ""
+
+    with sqlite3.connect("DataBases/warns.db") as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+        SELECT user1_id, user2_id, level, start_date FROM marriages 
+        WHERE user1_id = ? OR user2_id = ?
+        """, (user_id, user_id))
+        global_marriages = cursor.fetchall()
+
+    if global_marriages:
+        relationships_text += "<strong>Глобальні:</strong>\n"
+        for marriage in global_marriages:
+            partner_id = marriage[1] if marriage[0] == user_id else marriage[0]
+            level = marriage[2]
+            start_date = datetime.strptime(marriage[3], "%Y-%m-%d")
+            duration = (datetime.now() - start_date).days
+
+            relation_type = "Шлюб" if level == 2 else "Відносини"
+
+            cursor.execute("SELECT first_name FROM profiles WHERE user_id = ?", (partner_id,))
+            partner_name = cursor.fetchone()
+            partner_name = partner_name[0] if partner_name else "Невідомо"
+
+            relationships_text += (
+                f"{relation_type} з <a href='tg://openmessage?user_id={partner_id}'>{partner_name}</a>  "
+                f"⌛️: {duration} днів.\n"
+            )
+
+    return relationships_text
+
+
+async def update_quest_days():
+    with sqlite3.connect("DataBases/warns.db") as conn:
+        cursor = conn.cursor()
+
+        # Отримуємо поточну кількість днів
+        cursor.execute("SELECT days_since_saturday FROM quest_days")
+        days_since_saturday = cursor.fetchone()[0]
+
+        # Перевіряємо, чи сьогодні субота
+        today = datetime.now()
+        if today.weekday() == 5:  # Субота
+            days_since_saturday = 1
+
+            # Перебір усіх чатів і користувачів
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'chat_%_messages'")
+            chat_tables = cursor.fetchall()
+
+            for table_name_tuple in chat_tables:
+                table_name = table_name_tuple[0]
+                cursor.execute(f"SELECT user_id, messages_count FROM {table_name}")
+                users_data = cursor.fetchall()
+
+                for user_id, messages_data in users_data:
+                    # Отримуємо кількість повідомлень за тиждень
+                    messages_list = json.loads(messages_data)
+                    total_messages = sum(
+                        int(item["messages"])
+                        for item in messages_list
+                        if datetime.strptime(item["date"], "%d.%m.%Y") >= today - timedelta(days=7)
+                    )
+
+                    # Визначаємо бонус до репутації
+                    if total_messages >= 1000:
+                        reputation_bonus = 100
+                    elif total_messages >= 500:
+                        reputation_bonus = 50
+                    elif total_messages >= 100:
+                        reputation_bonus = 10
+                    else:
+                        reputation_bonus = 0
+
+                    # Оновлюємо репутацію в таблиці профілів
+                    if reputation_bonus > 0:
+                        cursor.execute(
+                            "UPDATE profiles SET reputation = COALESCE(reputation, 0) + ? WHERE user_id = ?",
+                            (reputation_bonus, user_id),
+                        )
+
+        else:
+            days_since_saturday += 1
+
+        # Оновлюємо значення в таблиці
+        cursor.execute("UPDATE quest_days SET days_since_saturday = ?", (days_since_saturday,))
+        conn.commit()
+
 
 
 
 @router.message(Command("christmas"))
 async def start_timer(message: Message):
-    if message.chat.type in ["group", "supergroup"] and not check_bot_command(message):
-        return  # Завершуємо функцію, якщо немає згадки бота
-    """Обробляє команду /christmas і запускає новий таймер."""
     chat_id = message.chat.id
-    
-    # Зупиняємо попередній таймер для цього чату, якщо він існує
+
+    # Зупиняємо попередній таймер, якщо існує
     if chat_id in active_timers:
         task = active_timers[chat_id]["task"]
-        if not task.done():  # Перевіряємо, чи не завершено
-            task.cancel()  # Скасовуємо
-    
-    # Розраховуємо час до Нового року
+        if not task.done():
+            task.cancel()
+
+    # Актуальний час до Нового року
     now = datetime.now()
     next_year = now.year + 1
     new_year_time = datetime(next_year, 1, 1, 0, 0, 0)
-    
-    # Відправляємо стартове повідомлення
-    sent_message = await message.answer("⏳ Створюємо таймер...")
-    
-    # Створюємо нове завдання для таймера
-    task = asyncio.create_task(update_timer(chat_id, sent_message.message_id, new_year_time))
-    
-    # Зберігаємо завдання в трекері
-    active_timers[chat_id] = {
-        "task": task,
-        "message_id": sent_message.message_id
-    }
 
+    # Перевіряємо або створюємо запис у базі даних
+    with sqlite3.connect("DataBases/warns.db") as conn:
+        cursor = conn.cursor()
+
+        # Перевіряємо, чи є запис для чату
+        cursor.execute("SELECT message_id FROM timers WHERE chat_id = ?", (chat_id,))
+        result = cursor.fetchone()
+
+        if result:
+            # Оновлюємо повідомлення та час
+            message_id = result[0]
+            await bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text="⏳ Оновлюємо таймер..."
+            )
+            cursor.execute(
+                "UPDATE timers SET end_time = ? WHERE chat_id = ?",
+                (new_year_time.isoformat(), chat_id)
+            )
+        else:
+            # Створюємо нове повідомлення
+            sent_message = await message.answer("⏳ Створюємо таймер...")
+            message_id = sent_message.message_id
+            cursor.execute(
+                "INSERT INTO timers (chat_id, message_id, end_time) VALUES (?, ?, ?)",
+                (chat_id, message_id, new_year_time.isoformat())
+            )
+
+        conn.commit()
+
+    # Запускаємо новий таймер
+    task = asyncio.create_task(update_timer(chat_id, message_id, new_year_time))
+    active_timers[chat_id] = {"task": task, "message_id": message_id}
     print(f"Запущено новий таймер для чату {chat_id}.")
 
 
@@ -636,37 +847,37 @@ async def walk(callback: CallbackQuery):
     await bot.edit_message_text(text, chat_id=callback.message.chat.id, message_id=callback.message.message_id, reply_markup=field_markup(xo.field()))
 
 
-@router.message(Command('whois'))
-async def whois_user(message: Message):
-    try:
-        # Перевіряємо аргументи
-        args = message.text.split()
-        if len(args) < 2:
-            await message.reply("❌ Використання: /whois @username")
-            return
+# @router.message(Command('whois'))
+# async def whois_user(message: Message):
+#     try:
+#         # Перевіряємо аргументи
+#         args = message.text.split()
+#         if len(args) < 2:
+#             await message.reply("❌ Використання: /whois @username")
+#             return
 
-        username = args[1]
-        if not username.startswith("@"):
-            await message.reply("❌ Юзернейм має починатися з '@', наприклад: @username")
-            return
+#         username = args[1]
+#         if not username.startswith("@"):
+#             await message.reply("❌ Юзернейм має починатися з '@', наприклад: @username")
+#             return
 
-        # Пошук користувача
-        try:
-            chat = await bot.get_chat(username)
-            await message.reply(
-                f"👤 Користувач: {chat.full_name or 'N/A'}\n"
-                f"🆔 ID: `{chat.id}`\n"
-                f"✍️ Юзернейм: @{chat.username if chat.username else 'N/A'}",
-                parse_mode="Markdown"
-            )
-        except Exception as inner_e:
-            if "chat not found" in str(inner_e):
-                await message.reply("❌ Користувача не знайдено. Можливо, він не існує або бот не має доступу.")
-            else:
-                await message.reply(f"⚠️ Помилка: {str(inner_e)}")
+#         # Пошук користувача
+#         try:
+#             chat = await bot.get_chat(username)
+#             await message.reply(
+#                 f"👤 Користувач: {chat.full_name or 'N/A'}\n"
+#                 f"🆔 ID: `{chat.id}`\n"
+#                 f"✍️ Юзернейм: @{chat.username if chat.username else 'N/A'}",
+#                 parse_mode="Markdown"
+#             )
+#         except Exception as inner_e:
+#             if "chat not found" in str(inner_e):
+#                 await message.reply("❌ Користувача не знайдено. Можливо, він не існує або бот не має доступу.")
+#             else:
+#                 await message.reply(f"⚠️ Помилка: {str(inner_e)}")
 
-    except Exception as e:
-        await message.reply(f"⚠️ Невідома помилка: {str(e)}")
+#     except Exception as e:
+#         await message.reply(f"⚠️ Невідома помилка: {str(e)}")
 
 
 @router.message(Command("profile"))
@@ -674,28 +885,22 @@ async def profile_command(message: types.Message):
     if message.chat.type in ["group", "supergroup"] and not check_bot_command(message):
         return  # Завершуємо функцію, якщо немає згадки бота
 
-    # Перевірка наявності аргументу після команди (наприклад, @username)
     args = message.text.split(maxsplit=1)
     if len(args) > 1:  # Якщо є аргумент після команди (username)
-        username = args[1].lstrip('@')  # Видаляємо символ "@" з username
+        username = args[1].lstrip('@')
         user_id = None
         try:
-            # Спробуємо отримати користувача через username
             user = await bot.get_chat(username)
-            user_id = user.id  # Отримуємо user_id
+            user_id = user.id
         except Exception as e:
             return await message.answer(f"Не вдалося знайти користувача за username {username}. Помилка: {e}")
-
     else:
-        # Якщо аргумент після команди не передано, використовуємо reply_to_message або автора повідомлення
         user = message.reply_to_message.from_user if message.reply_to_message else message.from_user
         user_id = user.id
 
-    # Створення таблиці для чату, якщо її не існує
     chat_id = message.chat.id
-    warnings_table = create_warnings_table(chat_id)
+    messages_table = update_message_count(chat_id, user_id)
 
-    # Перевірка, чи є користувач у таблиці профілів
     with sqlite3.connect("DataBases/warns.db") as conn:
         cursor = conn.cursor()
         cursor.execute("""
@@ -714,13 +919,10 @@ async def profile_command(message: types.Message):
     user_name = f"{first_name} {last_name}" if last_name else first_name
     bio_text = bio if bio else "Біографія не вказана."
 
-    # Перевірка на наявність стовпців reputation і presents
     reputation = None
     presents = None
     with sqlite3.connect("DataBases/warns.db") as conn:
         cursor = conn.cursor()
-
-        # Отримуємо список колонок таблиці
         cursor.execute("PRAGMA table_info(profiles);")
         columns = [column[1] for column in cursor.fetchall()]
 
@@ -734,26 +936,41 @@ async def profile_command(message: types.Message):
             presents_data = cursor.fetchone()
             presents = presents_data[0] if presents_data else None
 
-    # Отримання кількості попереджень
-    cursor.execute(f"SELECT warns FROM {warnings_table} WHERE user_id = ?", (user_id,))
+    cursor.execute(f"SELECT warns FROM chat_{str(chat_id).replace('-', '_')}_messages WHERE user_id = ?", (user_id,))
     warns = cursor.fetchone()
     warns_count = warns[0] if warns else 0
 
-    # Формуємо текст профілю
     profile_text = (
         f"👤 Користувач: <a href='tg://user?id={user_id}'>{user_name}</a>\n"
         f"Репутація:  ⚠️{warns_count}/3  |"
     )
 
-    # Якщо є репутація, додаємо її
     if reputation is not None:
         profile_text += f"  ➕: {reputation}  |"
-
-    # Якщо є подарунки, додаємо їх
     if presents is not None:
         profile_text += f"  🎁: {presents}\n"
-    
     profile_text += f"Біо:\n{bio_text}\n"
+
+    # --- Додано: отримання дати першого повідомлення та активності ---
+    sanitized_chat_id = str(chat_id).replace("-", "_")
+    cursor.execute(f"""
+    SELECT messages_count FROM chat_{sanitized_chat_id}_messages 
+    WHERE user_id = ?
+    """, (user_id,))
+    messages_data = cursor.fetchone()
+    if messages_data:
+        messages = eval(messages_data[0])  # Перетворюємо рядок на список
+        first_appearance = messages[0]["date"]  # Беремо першу дату
+        total_days = (datetime.now() - datetime.strptime(first_appearance, "%d.%m.%Y")).days
+        total_messages = sum(item["messages"] for item in messages)
+        activity_text = (
+            f"📅 Перша поява: {first_appearance} ({total_days} днів)\n"
+            f"📊 Актив (день|тиж|міс|всього): {total_messages // total_days} | "
+            f"{total_messages // (total_days // 7 if total_days >= 7 else 1)} | "
+            f"{total_messages // (total_days // 30 if total_days >= 30 else 1)} | {total_messages}"
+        )
+        profile_text += activity_text + "\n"
+    # --- Кінець доданого блоку ---
 
     # Додаємо інформацію про відносини
     sanitized_chat_id = str(chat_id).replace("-", "_")
@@ -774,50 +991,25 @@ async def profile_command(message: types.Message):
         """, (user_id, user_id))
         local_marriages = cursor.fetchall()
 
-    if global_marriages or local_marriages:
-        profile_text += f"{' ' * 15}<b>Ваші відносини:</b>{' ' * 15}\n"
+    if local_marriages:
+        profile_text += f"{' ' * 15}<b>Ваші відносини:</b>{' ' * 15}\n\n"
+        for marriage in local_marriages:
+            partner_id = marriage[1] if marriage[0] == user_id else marriage[0]
+            level = marriage[2]
+            start_date = datetime.strptime(marriage[3], "%Y-%m-%d")
+            duration = (datetime.now() - start_date).days
 
-        # Глобальні відносини
-        if global_marriages:
-            profile_text += "\n<strong>Глобальні:</strong>\n"
-            for marriage in global_marriages:
-                partner_id = marriage[1] if marriage[0] == user_id else marriage[0]
-                level = marriage[2]
-                start_date = datetime.strptime(marriage[3], "%Y-%m-%d")
-                duration = (datetime.now() - start_date).days
+            relation_type = "Шлюб" if level == 2 else "Відносини"
 
-                relation_type = "Шлюб" if level == 2 else "Відносини"
+            cursor.execute("SELECT first_name FROM profiles WHERE user_id = ?", (partner_id,))
+            partner_name = cursor.fetchone()
+            partner_name = partner_name[0] if partner_name else "Невідомо"
 
-                cursor.execute("SELECT first_name FROM profiles WHERE user_id = ?", (partner_id,))
-                partner_name = cursor.fetchone()
-                partner_name = partner_name[0] if partner_name else "Невідомо"
+            profile_text += (
+                f"{relation_type} з <a href='tg://openmessage?user_id={partner_id}'>{partner_name}</a>  "
+                f"⌛️: {duration} днів.\n"
+            )
 
-                profile_text += (
-                    f"{relation_type} з <a href='tg://openmessage?user_id={partner_id}'>{partner_name}</a>  "
-                    f"⌛️: {duration} днів."
-                )
-
-        # Локальні відносини
-        if local_marriages:
-            profile_text += "\n<strong>Локальні:</strong>\n"
-            for marriage in local_marriages:
-                partner_id = marriage[1] if marriage[0] == user_id else marriage[0]
-                level = marriage[2]
-                start_date = datetime.strptime(marriage[3], "%Y-%m-%d")
-                duration = (datetime.now() - start_date).days
-
-                relation_type = "Шлюб" if level == 2 else "Відносини"
-
-                cursor.execute("SELECT first_name FROM profiles WHERE user_id = ?", (partner_id,))
-                partner_name = cursor.fetchone()
-                partner_name = partner_name[0] if partner_name else "Невідомо"
-
-                profile_text += (
-                    f"{relation_type} з <a href='tg://openmessage?user_id={partner_id}'>{partner_name}</a>  "
-                    f"⌛️: {duration} днів.\n"
-                )
-
-    # Відправлення профілю
     if profile_photo_id:
         try:
             await message.answer_photo(photo=profile_photo_id, caption=profile_text, parse_mode="HTML")
@@ -889,6 +1081,136 @@ async def get_stats(message: Message):
             await message.reply("Ще немає статистики.")
 
 
+@router.message(
+    lambda message: message.text and any(
+        keyword in message.text.lower() for keyword in ["!стата", "!статався", "!стататиждень", "!статарік", "!статамісяць"]
+    )
+)
+async def stats_text_message(message: types.Message):    # Отримуємо тип команди з тексту
+    command = message.text.lower().strip()
+    chat_id = message.chat.id
+
+    # Параметри для вибору періоду
+    days_mapping = {
+        "!стата": 1,  # Сьогодні
+        "!статався": None,  # Весь час
+        "!стататиждень": 7,  # Останні 7 днів
+        "!статарік": 365,  # Останній рік
+        "!статамісяць": 30,  # Останній місяць
+    }
+
+    days = days_mapping.get(command)
+
+    # Підключення до бази даних
+    sanitized_chat_id = str(message.chat.id).replace("-", "_")
+    table_name = f"chat_{sanitized_chat_id}_messages"
+
+    with sqlite3.connect("DataBases/warns.db") as conn:
+        cursor = conn.cursor()
+
+        if days:
+            # Визначаємо дату початку для періоду
+            if days == 1:  # Сьогодні
+                start_date_obj = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            else:  # Інші періоди
+                start_date_obj = datetime.now() - timedelta(days=days)
+            start_date_str = start_date_obj.strftime("%d.%m.%Y")
+
+            # Отримуємо всі повідомлення за вибраний період
+            cursor.execute(f"SELECT user_id, messages_count FROM {table_name}")
+            result = cursor.fetchall()
+
+            # Перевіряємо повідомлення за обраний період
+            users_stats = {}
+            total_messages_chat = 0  # Лічильник для загальної кількості повідомлень чату
+            for user_id, messages in result:
+                messages_list = json.loads(messages)
+                total_messages = sum(
+                    message["messages"]
+                    for message in messages_list
+                    if datetime.strptime(message["date"], "%d.%m.%Y") >= start_date_obj
+                )
+                if total_messages > 0:
+                    users_stats[user_id] = total_messages
+                    total_messages_chat += total_messages  # Додаємо повідомлення цього користувача до загальної суми чату
+
+            if not users_stats:
+                return await message.answer("Немає даних за цей період.")
+
+            # Сортуємо статистику за кількістю повідомлень
+            sorted_stats = sorted(users_stats.items(), key=lambda x: x[1], reverse=True)
+
+            top_users = ""
+            for user_id, message_count in sorted_stats:
+                cursor.execute("SELECT first_name, last_name FROM profiles WHERE user_id = ?", (user_id,))
+                profile = cursor.fetchone()
+
+                if profile:
+                    first_name = profile[0]
+                    last_name = profile[1] if profile[1] else ""
+                    user_name = f"{first_name} {last_name}" if last_name else first_name
+                else:
+                    try:
+                        user = await message.bot.get_chat_member(chat_id, user_id)
+                        first_name = user.user.first_name
+                        last_name = user.user.last_name if user.user.last_name else ""
+                        user_name = f"{first_name} {last_name}" if last_name else first_name
+                    except Exception:
+                        user_name = f"User {user_id}"
+
+                top_users += f"👤 <a href='tg://openmessage?user_id={user_id}'>{user_name}</a>: {message_count}\n"
+
+            period = f"останній {days} день" if days == 1 else f"останні {days} днів"
+            return await message.answer(
+                f"Топ користувачів за {period}:\n{top_users}\n\n"
+                f"🔹 <b>Загальна кількість повідомлень чату за {period}:</b> <b>{total_messages_chat}</b>",
+                parse_mode="HTML"
+            )
+
+        else:  # Весь час
+            cursor.execute(f"SELECT user_id, messages_count FROM {table_name}")
+            result = cursor.fetchall()
+
+            users_stats = {}
+            total_messages_chat = 0  # Лічильник для загальної кількості повідомлень чату
+            for user_id, messages in result:
+                messages_list = json.loads(messages)
+                total_messages = sum(message["messages"] for message in messages_list)
+                users_stats[user_id] = total_messages
+                total_messages_chat += total_messages  # Додаємо повідомлення цього користувача до загальної суми чату
+
+            if not users_stats:
+                return await message.answer("Немає даних за весь час.")
+
+            sorted_stats = sorted(users_stats.items(), key=lambda x: x[1], reverse=True)
+
+            top_users = ""
+            for user_id, message_count in sorted_stats:
+                cursor.execute("SELECT first_name, last_name FROM profiles WHERE user_id = ?", (user_id,))
+                profile = cursor.fetchone()
+
+                if profile:
+                    first_name = profile[0]
+                    last_name = profile[1] if profile[1] else ""
+                    user_name = f"{first_name} {last_name}" if last_name else first_name
+                else:
+                    try:
+                        user = await message.bot.get_chat_member(chat_id, user_id)
+                        first_name = user.user.first_name
+                        last_name = user.user.last_name if user.user.last_name else ""
+                        user_name = f"{first_name} {last_name}" if last_name else first_name
+                    except Exception:
+                        user_name = f"User {user_id}"
+
+                top_users += f"👤 <a href='tg://openmessage?user_id={user_id}'>{user_name}</a>: {message_count}\n"
+
+            return await message.answer(
+                f"Топ користувачів за весь час:\n{top_users}\n\n"
+                f"🔹 <b>Загальна кількість повідомлень чату:</b> <b>{total_messages_chat}</b>",
+                parse_mode="HTML"
+            )
+
+
 # Команда /warn
 @router.message(Command("warn"))
 async def warn_command(message: types.Message, bot: Bot):
@@ -903,29 +1225,42 @@ async def warn_command(message: types.Message, bot: Bot):
     target_user = message.reply_to_message.from_user
     chat_id = message.chat.id
 
-    # Створення таблиці для чату, якщо її не існує
-    warnings_table = create_warnings_table(chat_id)
+    # Оновлюємо лічильник повідомлень для користувача
+    update_message_count(chat_id, target_user.id)
 
     # Додавання або оновлення запису про попередження
     with sqlite3.connect("DataBases/warns.db") as conn:
         cursor = conn.cursor()
+
+        # Вставка нового запису для користувача, якщо його ще немає
         cursor.execute(f"""
-        INSERT OR IGNORE INTO {warnings_table} (user_id, warns)
+        INSERT OR IGNORE INTO chat_{str(chat_id).replace("-", "_")}_messages (user_id, warns)
         VALUES (?, 0)
         """, (target_user.id,))
+
+        # Збільшуємо кількість варнів для користувача
         cursor.execute(f"""
-        UPDATE {warnings_table} SET warns = warns + 1 WHERE user_id = ?
+        UPDATE chat_{str(chat_id).replace("-", "_")}_messages SET warns = warns + 1 WHERE user_id = ?
         """, (target_user.id,))
 
-        cursor.execute(f"SELECT warns FROM {warnings_table} WHERE user_id = ?", (target_user.id,))
+        # Отримуємо поточну кількість варнів
+        cursor.execute(f"SELECT warns FROM chat_{str(chat_id).replace("-", "_")}_messages WHERE user_id = ?", (target_user.id,))
         warns = cursor.fetchone()[0]
 
+    # Дії залежно від кількості варнів
     if warns >= 3:
+        # Банимо користувача за 3 попередження
         await bot.ban_chat_member(chat_id, target_user.id)
-        cursor.execute(f"DELETE FROM {warnings_table} WHERE user_id = ?", (target_user.id,))
-        conn.commit()
+
+        # Видаляємо запис про користувача після бану
+        with sqlite3.connect("DataBases/warns.db") as conn:
+            cursor = conn.cursor()
+            cursor.execute(f"DELETE FROM chat_{str(chat_id).replace("-", "_")}_warns WHERE user_id = ?", (target_user.id,))
+            conn.commit()
+
         await message.answer(f"Користувач {target_user.first_name} забанений за 3 попередження.")
     else:
+        # Виводимо кількість попереджень
         await message.answer(f"Користувач {target_user.first_name} отримав {warns}/3 попереджень.")
 
 
@@ -1076,12 +1411,12 @@ async def report_command(message: types.Message, bot: Bot):
         return  # Завершуємо функцію, якщо немає згадки бота
     try:
         admins = await bot.get_chat_administrators(message.chat.id)
-        admin_list = ""
+        admin_ids = [admin.user.id for admin in admins]
+        admin_list = []
 
         # Визначаємо правильну таблицю для кожного чату
         chat_id = message.chat.id
-        warnings_table = create_warnings_table(chat_id)
-
+ 
         with sqlite3.connect("DataBases/warns.db") as conn:
             cursor = conn.cursor()
 
@@ -1101,12 +1436,15 @@ async def report_command(message: types.Message, bot: Bot):
 
                 # Формуємо ім'я для відображення
                 user_name = f"{first_name} {last_name}" if last_name else first_name
-                admin_list += f"<a href='tg://user?id={user_id}'>{user_name}</a>\n"
+                admin_list.append(f"<a href='tg://user?id={user_id}'>{user_name}</a>")
 
         if not admin_list:
             return await message.answer("У цьому чаті немає адміністраторів.")
 
-        await message.answer(f"Адміністратори чату:\n{admin_list}", parse_mode="HTML")
+        # Telegram обмежує довжину повідомлення (4096 символів) і 5 тегів на повідомлення
+        for i in range(0, len(admin_list), 5):
+            chunk = "\n".join(admin_list[i:i + 5])
+            await message.answer(f"Адміністратори чату:\n{chunk}", parse_mode="HTML")
     except Exception as e:
         await handle_command_error(message, e)
 
@@ -1492,7 +1830,7 @@ async def handle_local_relationship_confirmation(callback_query: CallbackQuery):
 
 
 # Обробка команди для шлюбу/відносин
-@router.message(lambda message: message.text.lower().startswith("!шлюби"))
+@router.message(lambda message: message.text.lower().startswith("!шлюби") or message.text.lower().startswith("!шлюб") or message.text.lower().startswith("!!шлюб"))
 async def marriages_command(message: types.Message):
     # Перевірка наявності аргументу після команди (наприклад, @username)
     args = message.text.split(maxsplit=1)
@@ -1511,8 +1849,19 @@ async def marriages_command(message: types.Message):
         user = message.reply_to_message.from_user if message.reply_to_message else message.from_user
         user_id = user.id
 
-    # Отримуємо відносини
-    relationships_text = await get_relationships(user_id, message.chat.id)
+    command = message.text.split()[0].lower()  # Отримуємо команду
+
+    if command == "!шлюби":
+        # Отримуємо всі відносини
+        relationships_text = await get_relationships(user_id, message.chat.id)
+    elif command == "!шлюб":
+        # Отримуємо тільки локальні відносини
+        relationships_text = await get_local_relationships(user_id, message.chat.id)
+    elif command == "!!шлюб":
+        # Отримуємо тільки глобальні відносини
+        relationships_text = await get_global_relationships(user_id)
+    else:
+        return await message.answer("Невідома команда.", parse_mode="HTML")
 
     if relationships_text:
         await message.answer(relationships_text, parse_mode="HTML")
@@ -1620,13 +1969,75 @@ async def give_reputation(message: Message):
         await message.answer(f"Ви додали +1 до репутації користувача {user_name}. 🎉")
 
 
+# 3. Обробка команди !квести
+@router.message(lambda message: message.text.lower().startswith("!квести"))
+async def quests_command(message: types.Message):
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    sanitized_chat_id = str(chat_id).replace("-", "_")
+    table_name = f"chat_{sanitized_chat_id}_messages"
+
+    with sqlite3.connect("DataBases/warns.db") as conn:
+        cursor = conn.cursor()
+
+        # Отримуємо кількість днів з таблиці quest_days
+        cursor.execute("SELECT days_since_saturday FROM quest_days")
+        days_since_saturday = cursor.fetchone()[0]
+
+        # Отримуємо повідомлення за останні N днів
+        cursor.execute(f"SELECT user_id, messages_count FROM {table_name}")
+        result = cursor.fetchall()
+
+        user_messages = 0
+        for user_id_db, messages in result:
+            if user_id_db == user_id:
+                messages_list = json.loads(messages)
+                start_date = datetime.now() - timedelta(days=days_since_saturday)
+                user_messages = sum(
+                    msg["messages"]
+                    for msg in messages_list
+                    if datetime.strptime(msg["date"], "%d.%m.%Y") >= start_date
+                )
+                break
+
+        # Форматування прогресу квестів
+        progress = [
+            {"threshold": 100, "reward": 10},
+            {"threshold": 500, "reward": 50},
+            {"threshold": 1000, "reward": 100}
+        ]
+
+        progress_output = []
+        for quest in progress:
+            current = min(user_messages, quest["threshold"])
+            if current >= quest["threshold"]:
+                progress_output.append(
+                    f"✅ <b>{current}/{quest['threshold']}</b> "
+                    f"<i>(нагорода: {quest['reward']} репутації)</i>"
+                )
+            else:
+                progress_output.append(
+                    f"❌ <b>{current}/{quest['threshold']}</b> "
+                    f"<i>(недостатньо повідомлень для отримання нагороди)</i>"
+                )
+
+        formatted_progress = "\n".join(progress_output)
+
+        await message.reply(
+            f"📊 <b>Ваш прогрес за останні {days_since_saturday} днів</b>:\n"
+            f"Всього повідомлень: <b>{user_messages}</b>\n\n"
+            f"🔹 <b>Прогрес квестів:</b>\n{formatted_progress}",
+            parse_mode="HTML"
+        )
+
+
 @router.message(F.text & ~F.text.startswith("/"))
 async def handle_text_message(message: Message):
     text = message.text
     chat_id = message.chat.id
     user_id = message.from_user.id
 
-    # Перевіряємо чи є повідомлення відповіддю на повідомлення бота
+    # Перевіряємо, чи є повідомлення відповіддю на повідомлення бота
     is_reply_to_bot = message.reply_to_message and message.reply_to_message.from_user.is_bot
 
     # Перевіряємо, чи містить повідомлення слово "сину" (незалежно від регістру)
@@ -1636,18 +2047,74 @@ async def handle_text_message(message: Message):
     save_message_to_file(text)
 
     # Оновлюємо лічильник повідомлень у базі
-    update_message_count(chat_id, user_id)
-    
+    update_message_count(chat_id, user_id)  # <-- Ця функція тепер зберігає список замість числа
+
     if "слава україні" in text.lower():
         await message.reply("Героям слава!")
     elif is_reply_to_bot or contains_son:
         random_quote = get_random_message()
         await message.reply(random_quote)
 
-    # Генеруємо випадкове число від 1 до 10
+    # Генеруємо випадкове число від 1 до 100
     elif random.randint(1, 100) == 5:
         random_quote = get_random_message()
         if random_quote:
             await message.reply(random_quote)
         else:
             await message.reply("Історія повідомлень поки що порожня.")
+
+async def track_message_count(message: types.Message):
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    sanitized_chat_id = str(chat_id).replace("-", "_")
+    table_name = f"chat_{sanitized_chat_id}_messages"
+
+    if not message.chat.type in ["group", "supergroup"]:
+        return
+
+    with sqlite3.connect("DataBases/warns.db") as conn:
+        cursor = conn.cursor()
+
+        # Перевіряємо, чи є таблиця для чату
+        cursor.execute(f"""
+        CREATE TABLE IF NOT EXISTS {table_name} (
+            user_id INTEGER PRIMARY KEY,
+            messages_count TEXT DEFAULT '[]',
+            warns INTEGER DEFAULT 0
+        )
+        """)
+
+        # Оновлюємо кількість повідомлень для користувача
+        cursor.execute(f"SELECT messages_count FROM {table_name} WHERE user_id = ?", (user_id,))
+        result = cursor.fetchone()
+
+        current_date = datetime.now().strftime("%d.%m.%Y")
+        if result:
+            messages_list = json.loads(result[0])
+            if messages_list and messages_list[-1]["date"] == current_date:
+                messages_list[-1]["messages"] += 1
+            else:
+                messages_list.append({"date": current_date, "messages": 1})
+            cursor.execute(f"UPDATE {table_name} SET messages_count = ? WHERE user_id = ?", (json.dumps(messages_list), user_id))
+        else:
+            messages_list = [{"date": current_date, "messages": 1}]
+            cursor.execute(f"INSERT INTO {table_name} (user_id, messages_count) VALUES (?, ?)", (user_id, json.dumps(messages_list)))
+
+        conn.commit()
+
+# 5. Планувальник для оновлення даних щодня
+async def schedule_daily_updates():
+    while True:
+        # Перевіряємо, чи сьогодні субота
+        today = datetime.now()
+        if today.weekday() == 5:  # Субота
+            await update_quest_days()
+        now = datetime.now()
+        next_day = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        await asyncio.sleep((next_day - now).total_seconds())
+        await update_quest_days()
+
+# Запуск планувальника при старті бота
+@router.startup()
+async def on_startup():
+    asyncio.create_task(schedule_daily_updates())
