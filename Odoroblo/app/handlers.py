@@ -3,13 +3,24 @@ from aiogram import types, Router, Bot, F
 from aiogram.filters import Command
 from aiogram.types import ChatPermissions, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, Message, FSInputFile
 import random
-from config import TOKEN, BOT_NAME, X, O
+from config import TOKEN, BOT_NAME, X, O, warns_path, history_path
 import traceback
 from Games import XO
 import datetime
 from datetime import datetime, timedelta, date
 import asyncio
+import logging
+import os
 import json
+from downloader import (
+    download_audio_from_youtube, 
+    download_audio_from_soundcloud, 
+    download_video_from_tiktok, 
+    download_audio_from_tiktok_video, 
+    download_video_from_instagram_reels, 
+    download_audio_from_instagram_reels_video, 
+    get_file_size
+)
 
 
 bot = Bot(token=TOKEN)
@@ -20,12 +31,12 @@ banned_users = set()
 muted_users = {}
 
 son = [
-    "сину", "сина", "синочок", "хіро",
-    "hero", "son", "myson", "child", "kiddo", "junior"
+    "сину", "сина", "синочок", "зєлєбобік", "зєлєбоба", "зеля", "син шлюхи"
+    "son", "child", "kiddo", "junior", "zelebobik", "zeleboba", "zelya"
 ]
 
 # Ініціалізація бази даних
-with sqlite3.connect("DataBases/warns.db") as conn:
+with sqlite3.connect(warns_path) as conn:
     cursor = conn.cursor()
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS profiles (
@@ -38,7 +49,7 @@ with sqlite3.connect("DataBases/warns.db") as conn:
     """)
 
 # Ініціалізація бази даних
-with sqlite3.connect("DataBases/warns.db") as conn:
+with sqlite3.connect(warns_path) as conn:
     cursor = conn.cursor()
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS timers (
@@ -49,7 +60,7 @@ with sqlite3.connect("DataBases/warns.db") as conn:
     """)
 
 # 1. Створення таблиці для зберігання кількості днів
-with sqlite3.connect("DataBases/warns.db") as conn:
+with sqlite3.connect(warns_path) as conn:
     cursor = conn.cursor()
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS quest_days (
@@ -112,7 +123,7 @@ active_timers = {}
 
 # Створення або відкриття бази даних
 def create_connection():
-    return sqlite3.connect('DataBases/history.db')
+    return sqlite3.connect(history_path)
 
 # Функція для створення таблиці повідомлень
 def create_messages_table():
@@ -191,7 +202,7 @@ def update_message_count(chat_id, user_id):
     sanitized_chat_id = str(chat_id).replace("-", "_")
     table_name = f"chat_{sanitized_chat_id}_messages"
 
-    with sqlite3.connect("DataBases/warns.db") as conn:
+    with sqlite3.connect(warns_path) as conn:
         cursor = conn.cursor()
 
         # Створення таблиці, якщо її ще немає
@@ -313,7 +324,7 @@ async def update_timer(chat_id: int, message_id: int, end_time: datetime):
 
 async def start_all_timers():
     """Запускає таймери для всіх чатів із бази даних під час запуску бота."""
-    with sqlite3.connect("DataBases/warns.db") as conn:
+    with sqlite3.connect(warns_path) as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT chat_id, message_id, end_time FROM timers")
         rows = cursor.fetchall()
@@ -341,7 +352,7 @@ async def start_all_timers():
 
 
 def create_marriages_table():
-    with sqlite3.connect("DataBases/warns.db") as conn:
+    with sqlite3.connect(warns_path) as conn:
         cursor = conn.cursor()
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS marriages (
@@ -357,7 +368,7 @@ create_marriages_table()
 
 def create_local_relationships_table(chat_id):
     sanitized_chat_id = str(chat_id).replace("-", "_")  # Замінити дефіси на підкреслення
-    with sqlite3.connect("DataBases/warns.db") as conn:
+    with sqlite3.connect(warns_path) as conn:
         cursor = conn.cursor()
         cursor.execute(f"""
         CREATE TABLE IF NOT EXISTS local_relationships_{sanitized_chat_id} (
@@ -376,7 +387,7 @@ async def get_relationships(user_id, chat_id):
     sanitized_chat_id = str(chat_id).replace("-", "_")
     relationships_text = ""
 
-    with sqlite3.connect("DataBases/warns.db") as conn:
+    with sqlite3.connect(warns_path) as conn:
         cursor = conn.cursor()
 
         # Глобальні відносини
@@ -442,7 +453,7 @@ async def get_top_marriages(chat_id, user_id):  # Додано user_id як ар
     sanitized_chat_id = str(chat_id).replace("-", "_")
     marriages_text = ""
 
-    with sqlite3.connect("DataBases/warns.db") as conn:
+    with sqlite3.connect(warns_path) as conn:
         cursor = conn.cursor()
 
         # Отримуємо всі шлюби рівня 1 і 2 для чату, сортуємо по даті створення
@@ -488,7 +499,7 @@ async def get_local_relationships(user_id, chat_id):
     sanitized_chat_id = str(chat_id).replace("-", "_")
     relationships_text = ""
 
-    with sqlite3.connect("DataBases/warns.db") as conn:
+    with sqlite3.connect(warns_path) as conn:
         cursor = conn.cursor()
         cursor.execute(f"""
         SELECT user1_id, user2_id, level, start_date FROM local_relationships_{sanitized_chat_id} 
@@ -520,7 +531,7 @@ async def get_local_relationships(user_id, chat_id):
 async def get_global_relationships(user_id):
     relationships_text = ""
 
-    with sqlite3.connect("DataBases/warns.db") as conn:
+    with sqlite3.connect(warns_path) as conn:
         cursor = conn.cursor()
         cursor.execute("""
         SELECT user1_id, user2_id, level, start_date FROM marriages 
@@ -551,7 +562,7 @@ async def get_global_relationships(user_id):
 
 
 async def update_quest_days():
-    with sqlite3.connect("DataBases/warns.db") as conn:
+    with sqlite3.connect(warns_path) as conn:
         cursor = conn.cursor()
 
         # Отримуємо поточну кількість днів
@@ -624,7 +635,7 @@ async def start_timer(message: Message):
     new_year_time = datetime(next_year, 1, 1, 0, 0, 0)
 
     # Перевіряємо або створюємо запис у базі даних
-    with sqlite3.connect("DataBases/warns.db") as conn:
+    with sqlite3.connect(warns_path) as conn:
         cursor = conn.cursor()
 
         # Перевіряємо, чи є запис для чату
@@ -666,7 +677,7 @@ async def create_tree(message: Message):
         return  # Завершуємо функцію, якщо немає згадки бота
     user_id = message.from_user.id
 
-    with sqlite3.connect("DataBases/warns.db") as conn:
+    with sqlite3.connect(warns_path) as conn:
         cursor = conn.cursor()
 
         # Перевірка наявності колонок 'reputation' та 'presents'
@@ -901,7 +912,7 @@ async def profile_command(message: types.Message):
     chat_id = message.chat.id
     messages_table = update_message_count(chat_id, user_id)
 
-    with sqlite3.connect("DataBases/warns.db") as conn:
+    with sqlite3.connect(warns_path) as conn:
         cursor = conn.cursor()
         cursor.execute("""
         INSERT OR IGNORE INTO profiles (user_id, first_name, last_name)
@@ -921,7 +932,7 @@ async def profile_command(message: types.Message):
 
     reputation = None
     presents = None
-    with sqlite3.connect("DataBases/warns.db") as conn:
+    with sqlite3.connect(warns_path) as conn:
         cursor = conn.cursor()
         cursor.execute("PRAGMA table_info(profiles);")
         columns = [column[1] for column in cursor.fetchall()]
@@ -974,7 +985,7 @@ async def profile_command(message: types.Message):
 
     # Додаємо інформацію про відносини
     sanitized_chat_id = str(chat_id).replace("-", "_")
-    with sqlite3.connect("DataBases/warns.db") as conn:
+    with sqlite3.connect(warns_path) as conn:
         cursor = conn.cursor()
 
         # Глобальні відносини
@@ -1028,59 +1039,6 @@ async def beat_with_belt(message: Message):
     await message.answer_voice(voice=voice)
 
 
-@router.message(Command("stats"))
-async def get_stats(message: Message):
-    if message.chat.type in ["group", "supergroup"] and not check_bot_command(message):
-        return  # Завершуємо функцію, якщо немає згадки бота
-    chat_id = message.chat.id
-    sanitized_chat_id = str(chat_id).replace("-", "_")
-    table_name = f"chat_{sanitized_chat_id}_messages"
-
-    with sqlite3.connect("DataBases/warns.db") as conn:
-        cursor = conn.cursor()
-
-        # Отримуємо дані з таблиці з кількістю повідомлень
-        cursor.execute(f"SELECT user_id, messages_count FROM {table_name} ORDER BY messages_count DESC")
-        rows = cursor.fetchall()
-
-        # Рахуємо загальну кількість повідомлень у чаті
-        cursor.execute(f"SELECT SUM(messages_count) FROM {table_name}")
-        total_messages = cursor.fetchone()[0] or 0
-
-        # Формуємо повідомлення зі статистикою
-        if rows:
-            stats = f"Загальна кількість повідомлень у чаті: {total_messages}\n\n"
-            for row in rows:
-                user_id = row[0]
-                messages_count = row[1]
-
-                # Отримуємо ім'я та прізвище користувача з таблиці профілів
-                cursor.execute("SELECT first_name, last_name FROM profiles WHERE user_id = ?", (user_id,))
-                profile = cursor.fetchone()
-
-                if profile:
-                    first_name = profile[0]
-                    last_name = profile[1] if profile[1] else ""
-                    user_name = f"{first_name} {last_name}" if last_name else first_name
-                else:
-                    # Якщо профіль не знайдено в базі даних, отримуємо ім'я через API
-                    try:
-                        user = await message.bot.get_chat_member(chat_id, user_id)  # Отримуємо інформацію про користувача
-                        first_name = user.user.first_name
-                        last_name = user.user.last_name if user.user.last_name else ""
-                        user_name = f"{first_name} {last_name}" if last_name else first_name
-                    except Exception as e:
-                        user_name = f"User {user_id}"  # Якщо виникла помилка або користувач не знайдений через API
-
-                # Формуємо рядок з посиланням на повідомлення
-                stats += f"<a href='tg://openmessage?user_id={user_id}'>{user_name}</a>: {messages_count} повідомлень\n"
-
-            # Відправляємо статистику
-            await message.reply(stats, parse_mode="HTML")
-        else:
-            await message.reply("Ще немає статистики.")
-
-
 @router.message(
     lambda message: message.text and any(
         keyword in message.text.lower() for keyword in ["!стата", "!статався", "!стататиждень", "!статарік", "!статамісяць"]
@@ -1105,7 +1063,7 @@ async def stats_text_message(message: types.Message):    # Отримуємо т
     sanitized_chat_id = str(message.chat.id).replace("-", "_")
     table_name = f"chat_{sanitized_chat_id}_messages"
 
-    with sqlite3.connect("DataBases/warns.db") as conn:
+    with sqlite3.connect(warns_path) as conn:
         cursor = conn.cursor()
 
         if days:
@@ -1229,7 +1187,7 @@ async def warn_command(message: types.Message, bot: Bot):
     update_message_count(chat_id, target_user.id)
 
     # Додавання або оновлення запису про попередження
-    with sqlite3.connect("DataBases/warns.db") as conn:
+    with sqlite3.connect(warns_path) as conn:
         cursor = conn.cursor()
 
         # Вставка нового запису для користувача, якщо його ще немає
@@ -1253,7 +1211,7 @@ async def warn_command(message: types.Message, bot: Bot):
         await bot.ban_chat_member(chat_id, target_user.id)
 
         # Видаляємо запис про користувача після бану
-        with sqlite3.connect("DataBases/warns.db") as conn:
+        with sqlite3.connect(warns_path) as conn:
             cursor = conn.cursor()
             cursor.execute(f"DELETE FROM chat_{str(chat_id).replace("-", "_")}_warns WHERE user_id = ?", (target_user.id,))
             conn.commit()
@@ -1264,7 +1222,6 @@ async def warn_command(message: types.Message, bot: Bot):
         await message.answer(f"Користувач {target_user.first_name} отримав {warns}/3 попереджень.")
 
 
-# Інші функції з попереднього коду (наприклад, /help, /ban, /unban) залишаються без змін
 # Обробник змін членства
 @router.message(F.content_type.in_({"new_chat_members"}))
 async def new_chat_members(message: types.Message):
@@ -1417,7 +1374,7 @@ async def report_command(message: types.Message, bot: Bot):
         # Визначаємо правильну таблицю для кожного чату
         chat_id = message.chat.id
  
-        with sqlite3.connect("DataBases/warns.db") as conn:
+        with sqlite3.connect(warns_path) as conn:
             cursor = conn.cursor()
 
             for admin in admins:
@@ -1467,7 +1424,7 @@ async def call_command(message: types.Message, bot: Bot):
                 mentions.append(f"<a href='tg://user?id={admin.user.id}'>{admin.user.first_name}</a>")
 
         # Зберігаємо згадки користувачів у базі даних (або додаємо вручну)
-        with sqlite3.connect("DataBases/warns.db") as conn:
+        with sqlite3.connect(warns_path) as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT user_id, first_name FROM profiles")
             additional_members = cursor.fetchall()
@@ -1523,7 +1480,7 @@ async def change_nickname_command(message: types.Message, command: Command):
     new_nickname = args.strip()
     user_id = message.from_user.id
 
-    with sqlite3.connect("DataBases/warns.db") as conn:
+    with sqlite3.connect(warns_path) as conn:
         cursor = conn.cursor()
         cursor.execute("UPDATE profiles SET first_name = ? WHERE user_id = ?", (new_nickname, user_id))
 
@@ -1546,7 +1503,7 @@ async def set_profile_photo_command(message: types.Message):
     user_id = message.from_user.id
     photo = message.reply_to_message.photo[-1].file_id  # Беремо найвищу якість
 
-    with sqlite3.connect("DataBases/warns.db") as conn:
+    with sqlite3.connect(warns_path) as conn:
         cursor = conn.cursor()
         cursor.execute("UPDATE profiles SET profile_photo_id = ? WHERE user_id = ?", (photo, user_id))
 
@@ -1565,7 +1522,7 @@ async def set_bio_command(message: types.Message, command: Command):
 
     user_id = message.from_user.id
 
-    with sqlite3.connect("DataBases/warns.db") as conn:
+    with sqlite3.connect(warns_path) as conn:
         cursor = conn.cursor()
         cursor.execute("UPDATE profiles SET bio = ? WHERE user_id = ?", (bio, user_id))
 
@@ -1589,7 +1546,7 @@ async def handle_relationship_message(message: types.Message):
     if sender_id == receiver_id:
         return await message.reply("Ви не можете почати відносини із самим собою.")
 
-    with sqlite3.connect("DataBases/warns.db") as conn:
+    with sqlite3.connect(warns_path) as conn:
         cursor = conn.cursor()
         if text.startswith("!!відносини"):
             cursor.execute("""
@@ -1629,7 +1586,7 @@ async def handle_relationship_message(message: types.Message):
             await message.reply("Ви не можете підтвердити або заперечити свою власну пропозицію!")
 
     if text.startswith("!!розлучитись"):
-        with sqlite3.connect("DataBases/warns.db") as conn:
+        with sqlite3.connect(warns_path) as conn:
             cursor = conn.cursor()
             cursor.execute("""
             SELECT * FROM marriages WHERE 
@@ -1660,7 +1617,7 @@ async def handle_relationship_confirmation(callback_query: CallbackQuery):
     # Логіка для підтвердження чи відмови від відносин
     if action == "yes":
         if "відносини" in callback_query.message.text.lower():
-            with sqlite3.connect("DataBases/warns.db") as conn:
+            with sqlite3.connect(warns_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
                 SELECT * FROM marriages WHERE 
@@ -1681,7 +1638,7 @@ async def handle_relationship_confirmation(callback_query: CallbackQuery):
             await callback_query.message.delete() 
 
         elif "розлучитись" in callback_query.message.text.lower():
-            with sqlite3.connect("DataBases/warns.db") as conn:
+            with sqlite3.connect(warns_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
                 DELETE FROM marriages WHERE 
@@ -1717,7 +1674,7 @@ async def handle_local_relationship_message(message: types.Message):
     create_local_relationships_table(chat_id)
 
     
-    with sqlite3.connect("DataBases/warns.db") as conn:
+    with sqlite3.connect(warns_path) as conn:
         cursor = conn.cursor()
 
         cursor.execute("SELECT first_name FROM profiles WHERE user_id = ?", (receiver_id,))
@@ -1793,7 +1750,7 @@ async def handle_local_relationship_confirmation(callback_query: CallbackQuery):
     # Логіка для підтвердження чи відмови від відносин
     if action == "yes":
         if "відносини" in callback_query.message.text.lower():
-            with sqlite3.connect("DataBases/warns.db") as conn:
+            with sqlite3.connect(warns_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute(f"""
                 SELECT * FROM local_relationships_{sanitized_chat_id} WHERE 
@@ -1815,7 +1772,7 @@ async def handle_local_relationship_confirmation(callback_query: CallbackQuery):
             await callback_query.message.delete() 
 
         elif "розлучитись" in callback_query.message.text.lower():
-            with sqlite3.connect("DataBases/warns.db") as conn:
+            with sqlite3.connect(warns_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute(f"""
                 DELETE FROM local_relationships_{sanitized_chat_id} WHERE 
@@ -1902,7 +1859,7 @@ async def give_reputation(message: Message):
     # Отримання поточної дати
     current_date = date.today().isoformat()  # Використовуємо date, щоб уникнути конфлікту
 
-    with sqlite3.connect("DataBases/warns.db") as conn:
+    with sqlite3.connect(warns_path) as conn:
         cursor = conn.cursor()
 
         # Перевірка і створення таблиці `profiles`, якщо її немає
@@ -1977,7 +1934,7 @@ async def quests_command(message: types.Message):
     sanitized_chat_id = str(chat_id).replace("-", "_")
     table_name = f"chat_{sanitized_chat_id}_messages"
 
-    with sqlite3.connect("DataBases/warns.db") as conn:
+    with sqlite3.connect(warns_path) as conn:
         cursor = conn.cursor()
 
         # Отримуємо кількість днів з таблиці quest_days
@@ -2031,6 +1988,76 @@ async def quests_command(message: types.Message):
         )
 
 
+
+
+# Обробник для повідомлень із посиланнями (URL)
+@router.message(F.text & F.entities)
+async def get_audio_or_video(message: Message):
+    urls = [message.text[entity.offset: entity.offset + entity.length] for entity in message.entities if entity.type == "url"]
+
+    if not urls:
+        return
+
+    tasks = [download_and_send_content(url, message) for url in urls]
+    await asyncio.gather(*tasks)  # Запускаємо всі завдання одночасно
+
+async def download_and_send_content(url: str, message: Message):
+    try:
+        # Визначаємо тип контенту
+        if "youtube.com" in url or "youtu.be" in url:
+            await bot.send_chat_action(message.chat.id, "upload_audio")
+            audio_file = await download_audio_from_youtube(url)
+            caption = "Аудіо з YouTube:"
+        elif "soundcloud.com" in url:
+            await bot.send_chat_action(message.chat.id, "upload_audio")
+            audio_file = await download_audio_from_soundcloud(url)
+            caption = "Аудіо з SoundCloud:"
+        elif "tiktok.com" in url:
+            await bot.send_chat_action(message.chat.id, "upload_video")
+            video_file = await download_video_from_tiktok(url)
+            if os.path.getsize(video_file) > 50 * 1024 * 1024:
+                await message.reply("Відео з TikTok занадто велике (більше 50 МБ), не можу завантажити.")
+                os.remove(video_file)
+                return
+            await message.reply_video(types.FSInputFile(video_file), caption="Відео з TikTok:")
+            os.remove(video_file)
+
+            await bot.send_chat_action(message.chat.id, "upload_audio")
+            audio_file = await download_audio_from_tiktok_video(url)
+            caption = "Аудіо з TikTok:"
+        elif "instagram.com" in url:
+            await bot.send_chat_action(message.chat.id, "upload_video")
+            video_file = await download_video_from_instagram_reels(url)
+            if os.path.getsize(video_file) > 50 * 1024 * 1024:
+                await message.reply("Відео з Instagram Reels занадто велике (більше 50 МБ), не можу завантажити.")
+                os.remove(video_file)
+                return
+            await message.reply_video(types.FSInputFile(video_file), caption="Відео з Instagram Reels:")
+            os.remove(video_file)
+
+            await bot.send_chat_action(message.chat.id, "upload_audio")
+            audio_file = await download_audio_from_instagram_reels_video(url)
+            caption = "Аудіо з Instagram Reels:"
+        else:
+            await message.reply(f"Не підтримую це посилання: {url}")
+            return
+
+        # Перевірка розміру файлу
+        if os.path.getsize(audio_file) > 50 * 1024 * 1024:
+            await message.reply("Аудіо занадто велике (більше 50 МБ), не можу завантажити.")
+            os.remove(audio_file)
+            return
+
+        await message.reply_audio(types.FSInputFile(audio_file), caption=caption)
+        os.remove(audio_file)
+
+    except Exception as e:
+        logging.error(f"Помилка завантаження: {e}")
+        await message.reply(f"Не вдалося завантажити контент з посилання: {url}")
+
+
+
+
 @router.message(F.text & ~F.text.startswith("/"))
 async def handle_text_message(message: Message):
     text = message.text
@@ -2072,7 +2099,7 @@ async def track_message_count(message: types.Message):
     if not message.chat.type in ["group", "supergroup"]:
         return
 
-    with sqlite3.connect("DataBases/warns.db") as conn:
+    with sqlite3.connect(warns_path) as conn:
         cursor = conn.cursor()
 
         # Перевіряємо, чи є таблиця для чату
@@ -2113,6 +2140,7 @@ async def schedule_daily_updates():
         next_day = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
         await asyncio.sleep((next_day - now).total_seconds())
         await update_quest_days()
+
 
 # Запуск планувальника при старті бота
 @router.startup()
